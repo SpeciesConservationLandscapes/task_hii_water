@@ -69,6 +69,8 @@ class HIIWater(EETask):
 
         self.export_image_ee(coastset_indirect, '{}/{}'.format(self.ee_driverdir, 'hii_water_driver'))
 
+        #TODO: navigable rivers
+
     def check_inputs(self):
         super().check_inputs()
         # add any task-specific checks here, and set self.status = self.FAILED if any fail
