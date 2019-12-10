@@ -48,6 +48,10 @@ class HIIWater(EETask):
 
         gpw_2015 = ee.Image(self.inputs['gpw_2015']['ee_path']).resample().reproject(crs='EPSG:4326',scale=300)
 
+        DECAY_CONSTANT = -0.0002
+        INDIRECT_INFLUENCE = 4
+
+        #COASTAL
         coast_within_4km = ocean.reduceNeighborhood(reducer=ee.Reducer.max(),kernel=ee.Kernel.circle(4000,'meters'))
         coast_within_15km = ocean.reduceNeighborhood(reducer=ee.Reducer.max(),kernel=ee.Kernel.circle(15000,'meters'))
 
@@ -58,16 +62,47 @@ class HIIWater(EETask):
             .multiply(ee.Image(3.333))
 
 
-        DECAY_CONSTANT = -0.0002
-        INDIRECT_INFLUENCE = 4
+
         coastset_indirect = coastal_settlements.eq(0).cumulativeCost(coastal_settlements,15000).reproject(crs='EPSG:4326',scale=300).unmask(0)\
                                                 .multiply(DECAY_CONSTANT).exp()\
                                                 .multiply(INDIRECT_INFLUENCE)\
                                                 .multiply(coast_within_15km)\
                                                 .updateMask(jrc)\
                                                 .updateMask(ocean.eq(0))
+        
+        #INLAND                                            
+        jrc_60_min = jrc.reduceNeighborhood(reducer=ee.Reducer.min(),kernel=ee.Kernel.circle(60,'meters')).reproject(crs='EPSG:4326',scale=30)
+                                                    
+        jrc_wide_rivers = jrc_60_min.reduceNeighborhood(reducer=ee.Reducer.max(),kernel=ee.Kernel.circle(60,'meters')).reproject(crs='EPSG:4326',scale=30)
+                                                    
+        within_4_km_of_inland_coast = jrc_wide_rivers.reduceNeighborhood(reducer=ee.Reducer.max(),kernel=ee.Kernel.circle(2000,'meters')).reproject(crs='EPSG:4326',scale=300)
 
-        self.export_image_ee(coastset_indirect, '{}/{}'.format(self.ee_driverdir, 'hii_water_driver'))
+        minpix_4km_threshold = within_4_km_of_inland_coast.selfMask().connectedPixelCount(50).reproject(crs='EPSG:4326',scale=900)
+
+        inland_community_mask_4km = minpix_4km_threshold.eq(50).unmask(0).reproject(crs='EPSG:4326',scale=300)
+
+        inland_settlements = pop.gte(10).multiply(inland_community_mask_4km)
+
+        inland_community_mask_11km = inland_community_mask_4km.reduceNeighborhood(reducer=ee.Reducer.max(),kernel=ee.Kernel.circle(11000,'meters'))\
+                                        .reproject(crs='EPSG:4326',scale=300)
+
+
+        inlandset_indirect = inland_settlements.eq(0).cumulativeCost(coastal_settlements,15000).reproject(crs='EPSG:4326',scale=300).unmask(0)\
+                                        .multiply(DECAY_CONSTANT).exp()\
+                                        .multiply(INDIRECT_INFLUENCE)\
+                                        .multiply(inland_community_mask_11km)
+                                        
+
+
+
+
+
+
+        hii_water_driver = coastset_indirect.add(inlandset_indirect)
+
+
+
+        self.export_image_ee(hii_water_driver, '{}/{}'.format(self.ee_driverdir, 'hii_water_driver'))
 
         #TODO: navigable rivers
 
