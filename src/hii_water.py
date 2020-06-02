@@ -63,8 +63,6 @@ class HIIWater(EETask):
         gpw_taskdate = gpw_prior.add(gpw_diff_fraction)
         gpw_taskdate_300m = gpw_taskdate.resample().reproject(crs=self.crs, scale=self.scale)
 
-        #gpw_2015 = ee.Image(self.inputs['gpw_2015']['ee_path']).resample().reproject(crs='EPSG:4326',scale=300)
-
         DECAY_CONSTANT = -0.0002
         INDIRECT_INFLUENCE = 4
 
@@ -104,7 +102,7 @@ class HIIWater(EETask):
                                         .multiply(INDIRECT_INFLUENCE)\
                                         .multiply(inland_community_mask_11km)
 
-        hii_water_driver = coastset_indirect.add(inlandset_indirect).updateMask(watermask)
+        hii_water_driver = coastset_indirect.add(inlandset_indirect).updateMask(watermask).multiply(4)
 
         self.export_image_ee(hii_water_driver, '{}/{}'.format(self.ee_driverdir, 'hii_water_driver'))
 
