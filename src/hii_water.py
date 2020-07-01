@@ -33,7 +33,7 @@ class HIIWater(EETask):
         "watermask": {
             "ee_type": EETask.IMAGE,
             "ee_path": "projects/HII/v1/source/phys/watermask_jrc70_cciocean",
-            "maxage": 30,
+            "maxage": 40,
         },
     }
     scale = 300
@@ -81,9 +81,6 @@ class HIIWater(EETask):
             kernel=ee.Kernel.circle(self.coast_settle_max, "meters"),
         )
         coastal_settlements = gpw.gte(10).multiply(coast_within_min)
-        # coastal_venter = (
-        #     coastal_settlements.add(ee.Image(1)).log().multiply(ee.Image(3.333))
-        # )
 
         coastset_indirect = (
             coastal_settlements.eq(0)
@@ -94,9 +91,12 @@ class HIIWater(EETask):
             .exp()
             .multiply(self.INDIRECT_INFLUENCE)
             .multiply(coast_within_max)
+            .subtract(16)
+            .divide(4)
         )
 
         # INLAND
+        
         jrc_min = jrc.reduceNeighborhood(
             reducer=ee.Reducer.min(),
             kernel=ee.Kernel.circle(self.wide_river_width * 2, "meters"),
@@ -105,7 +105,7 @@ class HIIWater(EETask):
         jrc_wide_rivers = jrc_min.reduceNeighborhood(
             reducer=ee.Reducer.max(),
             kernel=ee.Kernel.circle(self.wide_river_width * 2, "meters"),
-        ).reproject(crs=self.crs, scale=self.wide_river_width)
+        ).reproject(crs=self.crs, scale=self.wide_river_width).eq(0)
 
         within_min_of_inland_coast = jrc_wide_rivers.reduceNeighborhood(
             reducer=ee.Reducer.max(),
@@ -135,8 +135,8 @@ class HIIWater(EETask):
         ).reproject(crs=self.crs, scale=self.scale)
 
         inlandset_indirect = (
-            inland_settlements.eq(0)
-            .cumulativeCost(coastal_settlements, self.coast_settle_max)
+            ee.Image(1)
+            .cumulativeCost(jrc_wide_rivers, self.coast_settle_max)
             .reproject(crs=self.crs, scale=self.scale)
             .unmask(0)
             .multiply(self.DECAY_CONSTANT)
@@ -145,10 +145,16 @@ class HIIWater(EETask):
             .multiply(inland_community_mask)
         )
 
-        # TODO: Why multiply by 4? Is this self.INDIRECT_INFLUENCE, and we should multiply only once?
-        # TODO: Should we be creating watermask in this task, for use in other tasks?
+        inlandset_indirect = inlandset_indirect.where(inlandset_indirect.eq(4),0)
+
+
+
+        # TODO: Should we be creating watermask in this task, for use in other tasks? Adam: The water here isn't really dynamic here -- just the population
         hii_water_driver = (
-            coastset_indirect.add(inlandset_indirect).updateMask(watermask).multiply(4)
+            coastset_indirect
+            .add(inlandset_indirect)
+            .max(ee.Image(4))
+            .updateMask(watermask)
         )
 
         self.export_image_ee(
