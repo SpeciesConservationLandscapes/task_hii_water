@@ -12,13 +12,12 @@ class HIIWater(EETask):
         "jrc": {
             "ee_type": EETask.IMAGE,
             "ee_path": "JRC/GSW1_1/GlobalSurfaceWater",
-            "maxage": 30,
             "static": True,
         },
         "caspian": {
             "ee_type": EETask.FEATURECOLLECTION,
             "ee_path": "projects/HII/v1/source/phys/caspian",
-            "maxage": 30,
+            "static": True,
         },
         "gpw": {
             "ee_type": EETask.IMAGECOLLECTION,
@@ -28,12 +27,12 @@ class HIIWater(EETask):
         "ocean": {
             "ee_type": EETask.IMAGE,
             "ee_path": "projects/HII/v1/source/phys/ESACCI-LC-L4-WB-Ocean-Map-150m-P13Y-2000-v40",
-            "maxage": 30,
+            "static": True,
         },
         "watermask": {
             "ee_type": EETask.IMAGE,
             "ee_path": "projects/HII/v1/source/phys/watermask_jrc70_cciocean",
-            "maxage": 40,
+            "static": True,
         },
     }
     scale = 300
@@ -43,6 +42,8 @@ class HIIWater(EETask):
     coast_settle_max = 15000  # meters
     DECAY_CONSTANT = -0.0002
     INDIRECT_INFLUENCE = 4
+    MIN_PIX_COUNT = 50
+    THRESHOLD_SCALE = 900
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -112,20 +113,18 @@ class HIIWater(EETask):
             kernel=ee.Kernel.circle(self.coast_settle_max / 2, "meters"),
         ).reproject(crs=self.crs, scale=self.scale)
 
-        # TODO: replace hardcoded values with class properties
         minpix_4km_threshold = (
             within_min_of_inland_coast.selfMask()
-            .connectedPixelCount(50)
-            .reproject(crs=self.crs, scale=900)
+            .connectedPixelCount(MIN_PIX_COUNT)
+            .reproject(crs=self.crs, scale=THRESHOLD_SCALE)
         )
 
         inland_community_mask_4km = (
-            minpix_4km_threshold.eq(50)
+            minpix_4km_threshold.eq(MIN_PIX_COUNT)
             .unmask(0)
             .reproject(crs=self.crs, scale=self.scale)
         )
 
-        inland_settlements = gpw.gte(10).multiply(inland_community_mask_4km)
 
         inland_community_mask = inland_community_mask_4km.reduceNeighborhood(
             reducer=ee.Reducer.max(),
@@ -148,8 +147,6 @@ class HIIWater(EETask):
         inlandset_indirect = inlandset_indirect.where(inlandset_indirect.eq(4),0)
 
 
-
-        # TODO: Should we be creating watermask in this task, for use in other tasks? Adam: The water here isn't really dynamic here -- just the population
         hii_water_driver = (
             coastset_indirect
             .add(inlandset_indirect)
