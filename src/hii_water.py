@@ -1,36 +1,36 @@
 import argparse
 import ee
 from datetime import datetime, timezone
-from task_base import EETask
+from task_base import HIITask
 
 
-class HIIWater(EETask):
-    ee_rootdir = "projects/HII/v1/sumatra_poc"
+class HIIWater(HIITask):
+    ee_rootdir = "projects/HII/v1"
     ee_driverdir = "driver/water"
     # TODO: figure out inputs that will be updated
     inputs = {
         "jrc": {
-            "ee_type": EETask.IMAGE,
+            "ee_type": HIITask.IMAGE,
             "ee_path": "JRC/GSW1_1/GlobalSurfaceWater",
             "static": True,
         },
         "caspian": {
-            "ee_type": EETask.FEATURECOLLECTION,
+            "ee_type": HIITask.FEATURECOLLECTION,
             "ee_path": "projects/HII/v1/source/phys/caspian",
             "static": True,
         },
         "gpw": {
-            "ee_type": EETask.IMAGECOLLECTION,
+            "ee_type": HIITask.IMAGECOLLECTION,
             "ee_path": f"{ee_rootdir}/misc/gpw_interpolated",
-            "maxage": 1,
+            "maxage": 3,
         },
         "ocean": {
-            "ee_type": EETask.IMAGE,
+            "ee_type": HIITask.IMAGE,
             "ee_path": "projects/HII/v1/source/phys/ESACCI-LC-L4-WB-Ocean-Map-150m-P13Y-2000-v40",
             "static": True,
         },
         "watermask": {
-            "ee_type": EETask.IMAGE,
+            "ee_type": HIITask.IMAGE,
             "ee_path": "projects/HII/v1/source/phys/watermask_jrc70_cciocean",
             "static": True,
         },
@@ -47,9 +47,20 @@ class HIIWater(EETask):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.set_aoi_from_ee("{}/sumatra_poc_aoi".format(self.ee_rootdir))
+        self.realm = kwargs.pop("realm", None)
+        self.set_aoi_from_ee('projects/HII/v1/source/realms/' + self.realm)  
 
     def calc(self):
+        scale = 300
+        gpw_cadence = 5
+        wide_river_width = 30  # meters
+        coast_settle_min = 4000  # meters
+        coast_settle_max = 15000  # meters
+        DECAY_CONSTANT = -0.0002
+        INDIRECT_INFLUENCE = 4
+        MIN_PIX_COUNT = 50
+        THRESHOLD_SCALE = 900
+
         gpw, gpw_date = self.get_most_recent_image(
             ee.ImageCollection(self.inputs["gpw"]["ee_path"])
         )
@@ -155,7 +166,7 @@ class HIIWater(EETask):
         )
 
         self.export_image_ee(
-            hii_water_driver, "{}/{}".format(self.ee_driverdir, "hii_water_driver")
+            hii_water_driver, "{}/{}".format(self.ee_driverdir, "aois/" + self.realm)
         )
 
     def check_inputs(self):
@@ -165,6 +176,7 @@ class HIIWater(EETask):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("-r", "--realm", default='Afrotropic')
     parser.add_argument("-d", "--taskdate", default=datetime.now(timezone.utc).date())
     options = parser.parse_args()
     water_task = HIIWater(**vars(options))
