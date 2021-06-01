@@ -5,24 +5,29 @@ from task_base import HIITask
 
 
 class HIIWater(HIITask):
-    ee_rootdir = "projects/HII/v1"
-    ee_driverdir = "driver/water"
-    # TODO: figure out inputs that will be updated
+    scale = 300
+    gpw_cadence = 5
+    wide_river_width = 30  # meters
+    coastal_settlements_dist = 4000  # meters
+    indirect_distance = 15000  # meters
+    DECAY_CONSTANT = -0.0002
+    INDIRECT_INFLUENCE = 4
+
     inputs = {
         "jrc": {
             "ee_type": HIITask.IMAGE,
-            "ee_path": "JRC/GSW1_1/GlobalSurfaceWater",
+            "ee_path": "JRC/GSW1_2/GlobalSurfaceWater",
             "static": True,
         },
-        "caspian": {
+        "caspian_sea": {
             "ee_type": HIITask.FEATURECOLLECTION,
             "ee_path": "projects/HII/v1/source/phys/caspian",
             "static": True,
         },
         "gpw": {
             "ee_type": HIITask.IMAGECOLLECTION,
-            "ee_path": f"{ee_rootdir}/misc/gpw_interpolated",
-            "maxage": 3,
+            "ee_path": "CIESIN/GPWv411/GPW_Population_Density",
+            "maxage": 5,  # years
         },
         "ocean": {
             "ee_type": HIITask.IMAGE,
@@ -35,139 +40,133 @@ class HIIWater(HIITask):
             "static": True,
         },
     }
-    scale = 300
-    gpw_cadence = 5
-    wide_river_width = 30  # meters
-    coast_settle_min = 4000  # meters
-    coast_settle_max = 15000  # meters
-    DECAY_CONSTANT = -0.0002
-    INDIRECT_INFLUENCE = 4
-    MIN_PIX_COUNT = 50
-    THRESHOLD_SCALE = 900
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.realm = kwargs.pop("realm", None)
-        self.set_aoi_from_ee('projects/HII/v1/source/realms/' + self.realm)  
+        self.gpw = ee.ImageCollection(self.inputs["gpw"]["ee_path"])
+        self.jrc = ee.Image(self.inputs["jrc"]["ee_path"])
+        self.ocean = ee.Image(self.inputs["ocean"]["ee_path"])
+        self.caspian_sea_fc = ee.FeatureCollection(
+            self.inputs["caspian_sea"]["ee_path"]
+        )
+        self.watermask = ee.Image(self.inputs["watermask"]["ee_path"])
+        self.ee_taskdate = ee.Date(self.taskdate.strftime(self.DATE_FORMAT))
+        self.kernel = {
+            "coastal_settlements": ee.Kernel.euclidean(
+                radius=self.coastal_settlements_dist, units="meters"
+            ),
+            "indirect": ee.Kernel.euclidean(
+                radius=self.indirect_distance, units="meters"
+            ),
+            "river_width_shrink": ee.Kernel.circle(
+                radius=self.wide_river_width * 2, units="meters"
+            ),
+            "river_width_expand": ee.Kernel.euclidean(
+                radius=self.wide_river_width * 2, units="meters"
+            ),
+        }
+
+    def gpw_earliest(self):
+        return self.gpw.sort("system:time_start").first()
+
+    def gpw_latest(self):
+        return self.gpw.sort("system:time_start", False).first()
+
+    def gpw_interpolated(self):
+        gpw_prev = self.gpw.filterDate(
+            self.ee_taskdate.advance(-self.gpw_cadence, "year"), self.ee_taskdate
+        ).first()
+        gpw_next = self.gpw.filterDate(
+            self.ee_taskdate, self.ee_taskdate.advance(self.gpw_cadence, "year")
+        ).first()
+
+        gpw_delta_days = gpw_next.date().difference(gpw_prev.date(), "day")
+        taskdate_delta_days = self.ee_taskdate.difference(gpw_prev.date(), "day")
+
+        gpw_diff = gpw_next.subtract(gpw_prev)
+
+        gpw_daily_change = gpw_diff.divide(gpw_delta_days)
+        gpw_change = gpw_daily_change.multiply(taskdate_delta_days)
+
+        return gpw_prev.add(gpw_change)
 
     def calc(self):
-        scale = 300
-        gpw_cadence = 5
-        wide_river_width = 30  # meters
-        coast_settle_min = 4000  # meters
-        coast_settle_max = 15000  # meters
-        DECAY_CONSTANT = -0.0002
-        INDIRECT_INFLUENCE = 4
-        MIN_PIX_COUNT = 50
-        THRESHOLD_SCALE = 900
+        gpw_taskdate = None
+        ee_taskdate_millis = self.ee_taskdate.millis()
+        gpw_first_date = ee.Date(
+            self.gpw.sort("system:time_start").first().get("system:time_start")
+        ).millis()
+        gpw_last_date = ee.Date(
+            self.gpw.sort("system:time_start", False).first().get("system:time_start")
+        ).millis()
+        start_test = ee_taskdate_millis.lt(gpw_first_date)
+        end_test = ee_taskdate_millis.gt(gpw_last_date)
+        interpolate_test = start_test.eq(0).And(end_test.eq(0))
+        if interpolate_test.getInfo():
+            gpw_taskdate = self.gpw_interpolated()
+        elif end_test.getInfo():
+            gpw_taskdate = self.gpw_latest()
+        elif start_test.getInfo():
+            gpw_taskdate = self.gpw_earliest()
+        else:
+            raise Exception("no valid GPW image")
 
-        gpw, gpw_date = self.get_most_recent_image(
-            ee.ImageCollection(self.inputs["gpw"]["ee_path"])
-        )
-        watermask = ee.Image(self.inputs["watermask"]["ee_path"])
-        caspian = (
-            ee.Image(0)
-            .clip(ee.FeatureCollection(self.inputs["caspian"]["ee_path"]))
-            .unmask(1)
-        )
-        ocean = (
-            ee.Image(self.inputs["ocean"]["ee_path"])
-            .eq(0)
-            .add(caspian.eq(0).reproject(crs=self.crs, scale=self.scale))
-        )
-        jrc = (
-            ee.Image(self.inputs["jrc"]["ee_path"])
-            .select("occurrence")
-            .lte(70)
-            .unmask(1)
-            .multiply(caspian)
+        caspian_sea = self.caspian_sea_fc.reduceToImage(["glwd_id"], ee.Reducer.max())
+
+        ocean = ee.Image.cat(self.ocean.eq(0), caspian_sea.eq(1)).reduce(
+            ee.Reducer.max()
         )
 
         # COASTAL
-        coast_within_min = ocean.reduceNeighborhood(
-            reducer=ee.Reducer.max(),
-            kernel=ee.Kernel.circle(self.coast_settle_min, "meters"),
+        coastal_settlements = (
+            ocean.distance(self.kernel["coastal_settlements"])
+            .updateMask(gpw_taskdate.gte(10))
+            .selfMask()
         )
-        coast_within_max = ocean.reduceNeighborhood(
-            reducer=ee.Reducer.max(),
-            kernel=ee.Kernel.circle(self.coast_settle_max, "meters"),
-        )
-        coastal_settlements = gpw.gte(10).multiply(coast_within_min)
 
-        coastset_indirect = (
-            coastal_settlements.eq(0)
-            .cumulativeCost(coastal_settlements, self.coast_settle_max)
-            .reproject(crs=self.crs, scale=self.scale)
-            .unmask(0)
+        coastal_influence = (
+            coastal_settlements.distance(self.kernel["indirect"], False)
             .multiply(self.DECAY_CONSTANT)
             .exp()
             .multiply(self.INDIRECT_INFLUENCE)
-            .multiply(coast_within_max)
-            .subtract(16)
-            .divide(4)
+            .updateMask(ocean.eq(0))
         )
 
         # INLAND
-        
-        jrc_min = jrc.reduceNeighborhood(
-            reducer=ee.Reducer.min(),
-            kernel=ee.Kernel.circle(self.wide_river_width * 2, "meters"),
-        ).reproject(crs=self.crs, scale=self.wide_river_width)
-
-        jrc_wide_rivers = jrc_min.reduceNeighborhood(
-            reducer=ee.Reducer.max(),
-            kernel=ee.Kernel.circle(self.wide_river_width * 2, "meters"),
-        ).reproject(crs=self.crs, scale=self.wide_river_width).eq(0)
-
-        within_min_of_inland_coast = jrc_wide_rivers.reduceNeighborhood(
-            reducer=ee.Reducer.max(),
-            kernel=ee.Kernel.circle(self.coast_settle_max / 2, "meters"),
-        ).reproject(crs=self.crs, scale=self.scale)
-
-        minpix_4km_threshold = (
-            within_min_of_inland_coast.selfMask()
-            .connectedPixelCount(MIN_PIX_COUNT)
-            .reproject(crs=self.crs, scale=THRESHOLD_SCALE)
+        jrc_water = (
+            self.jrc.select("occurrence").lte(70).unmask(1).updateMask(ocean.eq(0))
         )
 
-        inland_community_mask_4km = (
-            minpix_4km_threshold.eq(MIN_PIX_COUNT)
-            .unmask(0)
-            .reproject(crs=self.crs, scale=self.scale)
+        jrc_wide_inland = (
+            jrc_water.reduceNeighborhood(
+                reducer=ee.Reducer.max(),
+                kernel=self.kernel["river_width_shrink"],
+            )
+            .eq(0)
+            .distance(self.kernel["river_width_expand"], False)
+            .gte(0)
+            .selfMask()
+            .reproject(crs=self.crs, scale=self.wide_river_width)
         )
 
-
-        inland_community_mask = inland_community_mask_4km.reduceNeighborhood(
-            reducer=ee.Reducer.max(),
-            kernel=ee.Kernel.circle(
-                self.coast_settle_max - self.coast_settle_min, "meters"
-            ),
-        ).reproject(crs=self.crs, scale=self.scale)
-
-        inlandset_indirect = (
-            ee.Image(1)
-            .cumulativeCost(jrc_wide_rivers, self.coast_settle_max)
-            .reproject(crs=self.crs, scale=self.scale)
-            .unmask(0)
+        inland_influence = (
+            jrc_wide_inland.distance(self.kernel["indirect"], False)
             .multiply(self.DECAY_CONSTANT)
             .exp()
             .multiply(self.INDIRECT_INFLUENCE)
-            .multiply(inland_community_mask)
         )
 
-        inlandset_indirect = inlandset_indirect.where(inlandset_indirect.eq(4),0)
-
-
-        hii_water_driver = (
-            coastset_indirect
-            .add(inlandset_indirect)
-            .max(ee.Image(4))
-            .updateMask(watermask)
+        water_driver = (
+            coastal_influence.unmask(0)
+            .max(inland_influence.unmask(0))
+            .selfMask()
+            .updateMask(self.watermask)
+            .multiply(100)
+            .int()
+            .rename("hii_water_driver")
         )
 
-        self.export_image_ee(
-            hii_water_driver, "{}/{}".format(self.ee_driverdir, "aois/" + self.realm)
-        )
+        self.export_image_ee(water_driver, f"driver/water")
 
     def check_inputs(self):
         super().check_inputs()
@@ -176,7 +175,6 @@ class HIIWater(HIITask):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-r", "--realm", default='Afrotropic')
     parser.add_argument("-d", "--taskdate", default=datetime.now(timezone.utc).date())
     options = parser.parse_args()
     water_task = HIIWater(**vars(options))
