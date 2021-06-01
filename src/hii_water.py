@@ -5,16 +5,17 @@ from task_base import HIITask
 
 
 class HIIWater(HIITask):
-    scale = 300
-    gpw_cadence = 5
-    wide_river_width = 30  # meters
-    coastal_settlements_dist = 4000  # meters
-    indirect_distance = 15000  # meters
+    SCALE = 300
+    GPW_CADENCE = 5
+    WATER_OCCURANCE_THRESHOLD = 70
+    WIDE_RIVER_MIN_WIDTH = 30  # meters
+    SETTLMENT_DISTANCE_FROM_COAST = 4000  # meters
+    INDIRECT_DISTANCE = 15000  # meters
     DECAY_CONSTANT = -0.0002
-    INDIRECT_INFLUENCE = 4
+    INDIRECT_INFLUENCE = 4  # TODO: Set to 10.
 
     inputs = {
-        "jrc": {
+        "gsw": {
             "ee_type": HIITask.IMAGE,
             "ee_path": "JRC/GSW1_2/GlobalSurfaceWater",
             "static": True,
@@ -44,25 +45,25 @@ class HIIWater(HIITask):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.gpw = ee.ImageCollection(self.inputs["gpw"]["ee_path"])
-        self.jrc = ee.Image(self.inputs["jrc"]["ee_path"])
+        self.gsw = ee.Image(self.inputs["gsw"]["ee_path"])
         self.ocean = ee.Image(self.inputs["ocean"]["ee_path"])
         self.caspian_sea_fc = ee.FeatureCollection(
             self.inputs["caspian_sea"]["ee_path"]
         )
         self.watermask = ee.Image(self.inputs["watermask"]["ee_path"])
         self.ee_taskdate = ee.Date(self.taskdate.strftime(self.DATE_FORMAT))
-        self.kernel = {
+        self.kernels = {
             "coastal_settlements": ee.Kernel.euclidean(
-                radius=self.coastal_settlements_dist, units="meters"
+                radius=self.SETTLMENT_DISTANCE_FROM_COAST, units="meters"
             ),
             "indirect": ee.Kernel.euclidean(
-                radius=self.indirect_distance, units="meters"
+                radius=self.INDIRECT_DISTANCE, units="meters"
             ),
             "river_width_shrink": ee.Kernel.circle(
-                radius=self.wide_river_width * 2, units="meters"
+                radius=self.WIDE_RIVER_MIN_WIDTH * 2, units="meters"
             ),
             "river_width_expand": ee.Kernel.euclidean(
-                radius=self.wide_river_width * 2, units="meters"
+                radius=self.WIDE_RIVER_MIN_WIDTH * 2, units="meters"
             ),
         }
 
@@ -119,13 +120,13 @@ class HIIWater(HIITask):
 
         # COASTAL
         coastal_settlements = (
-            ocean.distance(self.kernel["coastal_settlements"])
+            ocean.distance(self.kernels["coastal_settlements"])
             .updateMask(gpw_taskdate.gte(10))
             .selfMask()
         )
 
         coastal_influence = (
-            coastal_settlements.distance(self.kernel["indirect"], False)
+            coastal_settlements.distance(self.kernels["indirect"], False)
             .multiply(self.DECAY_CONSTANT)
             .exp()
             .multiply(self.INDIRECT_INFLUENCE)
@@ -133,24 +134,27 @@ class HIIWater(HIITask):
         )
 
         # INLAND
-        jrc_water = (
-            self.jrc.select("occurrence").lte(70).unmask(1).updateMask(ocean.eq(0))
+        surface_water = (
+            self.gsw.select("occurrence")
+            .lte(self.WATER_OCCURANCE_THRESHOLD)
+            .unmask(1)
+            .updateMask(ocean.eq(0))
         )
 
-        jrc_wide_inland = (
-            jrc_water.reduceNeighborhood(
+        wide_inland_water = (
+            surface_water.reduceNeighborhood(
                 reducer=ee.Reducer.max(),
-                kernel=self.kernel["river_width_shrink"],
+                kernel=self.kernels["river_width_shrink"],
             )
             .eq(0)
-            .distance(self.kernel["river_width_expand"], False)
+            .distance(self.kernels["river_width_expand"], False)
             .gte(0)
             .selfMask()
-            .reproject(crs=self.crs, scale=self.wide_river_width)
+            .reproject(crs=self.crs, scale=self.WIDE_RIVER_MIN_WIDTH)
         )
 
-        inland_influence = (
-            jrc_wide_inland.distance(self.kernel["indirect"], False)
+        inland_water_influence = (
+            wide_inland_water.distance(self.kernels["indirect"], False)
             .multiply(self.DECAY_CONSTANT)
             .exp()
             .multiply(self.INDIRECT_INFLUENCE)
@@ -158,7 +162,7 @@ class HIIWater(HIITask):
 
         water_driver = (
             coastal_influence.unmask(0)
-            .max(inland_influence.unmask(0))
+            .max(inland_water_influence.unmask(0))
             .selfMask()
             .updateMask(self.watermask)
             .multiply(100)
