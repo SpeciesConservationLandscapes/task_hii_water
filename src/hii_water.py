@@ -5,14 +5,18 @@ from task_base import HIITask
 
 
 class HIIWater(HIITask):
-    SCALE = 300
-    GPW_CADENCE = 5
-    WATER_OCCURANCE_THRESHOLD = 70
+    SETTLEMENT_DISTANCE_FROM_COAST = 4000  # meters
+    COASTAL_SETTLEMENT_POPULATION_DENSITY = 10
+    COASTAL_NAVIGATION_DISTANCE = 80000  # meters
+    OCEAN_BUFFER_DISTANCE = 300  # meters
+    GSW_OCCURRENCE_THRESHOLD = 40
     WIDE_RIVER_MIN_WIDTH = 30  # meters
-    SETTLMENT_DISTANCE_FROM_COAST = 4000  # meters
+    GSW_CONNECTED_PIXEL_MIN = 300  # pixels
     INDIRECT_DISTANCE = 15000  # meters
-    DECAY_CONSTANT = -0.0002
-    INDIRECT_INFLUENCE = 4  # TODO: Set to 10.
+    DECAY_CONSTANT = -0.0003
+    INDIRECT_INFLUENCE = 10
+    scale = 300
+    gpw_cadence = 5
 
     inputs = {
         "gsw": {
@@ -44,7 +48,9 @@ class HIIWater(HIITask):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.gpw = ee.ImageCollection(self.inputs["gpw"]["ee_path"])
+        self.gpw = ee.ImageCollection(
+            self.inputs["gpw"]["ee_path"]
+        )  # TODO: modify to night lights (Venter)
         self.gsw = ee.Image(self.inputs["gsw"]["ee_path"])
         self.ocean = ee.Image(self.inputs["ocean"]["ee_path"])
         self.caspian_sea_fc = ee.FeatureCollection(
@@ -54,7 +60,13 @@ class HIIWater(HIITask):
         self.ee_taskdate = ee.Date(self.taskdate.strftime(self.DATE_FORMAT))
         self.kernels = {
             "coastal_settlements": ee.Kernel.euclidean(
-                radius=self.SETTLMENT_DISTANCE_FROM_COAST, units="meters"
+                radius=self.SETTLEMENT_DISTANCE_FROM_COAST, units="meters"
+            ),
+            "coastal_navigation": ee.Kernel.euclidean(
+                radius=self.COASTAL_NAVIGATION_DISTANCE, units="meters"
+            ),
+            "ocean_buffer": ee.Kernel.euclidean(
+                radius=self.OCEAN_BUFFER_DISTANCE, units="meters"
             ),
             "indirect": ee.Kernel.euclidean(
                 radius=self.INDIRECT_DISTANCE, units="meters"
@@ -121,12 +133,20 @@ class HIIWater(HIITask):
         # COASTAL
         coastal_settlements = (
             ocean.distance(self.kernels["coastal_settlements"])
-            .updateMask(gpw_taskdate.gte(10))
+            .updateMask(gpw_taskdate.gte(self.COASTAL_SETTLEMENT_POPULATION_DENSITY))
             .selfMask()
         )
 
-        coastal_influence = (
-            coastal_settlements.distance(self.kernels["indirect"], False)
+        coast_navigable = ocean.updateMask(
+            coastal_settlements.distance(self.kernels["coastal_navigation"], False)
+            .gte(0)
+            .reproject(
+                crs=self.crs, scale=1000
+            )  # needs to be done at coarse scale to work at this distance
+        )
+
+        coast_influence = (
+            coast_navigable.distance(self.kernels["indirect"], False)
             .multiply(self.DECAY_CONSTANT)
             .exp()
             .multiply(self.INDIRECT_INFLUENCE)
@@ -134,37 +154,54 @@ class HIIWater(HIITask):
         )
 
         # INLAND
-        surface_water = (
-            self.gsw.select("occurrence")
-            .lte(self.WATER_OCCURANCE_THRESHOLD)
-            .unmask(1)
-            .updateMask(ocean.eq(0))
+        coast_buffer = (
+            ocean.distance(self.kernels["ocean_buffer"])
+            .gte(0)
+            .unmask(0)
+            .eq(0)
+            .selfMask()
         )
 
-        wide_inland_water = (
-            surface_water.reduceNeighborhood(
+        inland_water = (
+            self.gsw.select("occurrence")
+            .lte(self.GSW_OCCURRENCE_THRESHOLD)
+            .updateMask(coast_buffer)
+        )
+
+        inland_water_mask = inland_water.eq(0).selfMask().multiply(0).unmask(1)
+
+        inland_water_navigable = inland_water.updateMask(
+            inland_water.reduceNeighborhood(
                 reducer=ee.Reducer.max(),
                 kernel=self.kernels["river_width_shrink"],
             )
             .eq(0)
             .distance(self.kernels["river_width_expand"], False)
             .gte(0)
+        )
+
+        inland_water_connected = (
+            inland_water_navigable.connectedPixelCount(
+                self.GSW_CONNECTED_PIXEL_MIN, True
+            )
+            .gte(self.GSW_CONNECTED_PIXEL_MIN)
             .selfMask()
-            .reproject(crs=self.crs, scale=self.WIDE_RIVER_MIN_WIDTH)
+            .reproject(crs=self.crs, scale=self.scale)
         )
 
         inland_water_influence = (
-            wide_inland_water.distance(self.kernels["indirect"], False)
+            inland_water_connected.distance(self.kernels["indirect"], False)
             .multiply(self.DECAY_CONSTANT)
             .exp()
             .multiply(self.INDIRECT_INFLUENCE)
         )
 
         water_driver = (
-            coastal_influence.unmask(0)
+            coast_influence.unmask(0)
             .max(inland_water_influence.unmask(0))
             .selfMask()
             .updateMask(self.watermask)
+            .updateMask(inland_water_mask)
             .multiply(100)
             .int()
             .rename("hii_water_driver")
