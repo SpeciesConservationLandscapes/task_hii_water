@@ -112,3 +112,5 @@ buildrun.sh
 
 
 .DS_Store
+
+.idea/
