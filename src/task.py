@@ -112,8 +112,8 @@ class HIIWater(HIITask):
         gpw_last_date = ee.Date(
             self.gpw.sort("system:time_start", False).first().get("system:time_start")
         ).millis()
-        start_test = ee_taskdate_millis.lt(gpw_first_date)
-        end_test = ee_taskdate_millis.gt(gpw_last_date)
+        start_test = ee_taskdate_millis.lte(gpw_first_date)
+        end_test = ee_taskdate_millis.gte(gpw_last_date)
         interpolate_test = start_test.eq(0).And(end_test.eq(0))
         if interpolate_test.getInfo():
             gpw_taskdate = self.gpw_interpolated()
