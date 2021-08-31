@@ -1,6 +1,5 @@
 import argparse
 import ee
-from datetime import datetime, timezone
 from task_base import HIITask
 
 
@@ -15,8 +14,6 @@ class HIIWater(HIITask):
     INDIRECT_DISTANCE = 15000  # meters
     DECAY_CONSTANT = -0.0003
     INDIRECT_INFLUENCE = 10
-    scale = 300
-    gpw_cadence = 5
 
     inputs = {
         "gsw": {
@@ -28,11 +25,6 @@ class HIIWater(HIITask):
             "ee_type": HIITask.FEATURECOLLECTION,
             "ee_path": "projects/HII/v1/source/phys/caspian",
             "static": True,
-        },
-        "gpw": {
-            "ee_type": HIITask.IMAGECOLLECTION,
-            "ee_path": "CIESIN/GPWv411/GPW_Population_Density",
-            "maxage": 5,  # years
         },
         "ocean": {
             "ee_type": HIITask.IMAGE,
@@ -48,16 +40,12 @@ class HIIWater(HIITask):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.gpw = ee.ImageCollection(
-            self.inputs["gpw"]["ee_path"]
-        )  # TODO: modify to night lights (Venter)
         self.gsw = ee.Image(self.inputs["gsw"]["ee_path"])
         self.ocean = ee.Image(self.inputs["ocean"]["ee_path"])
         self.caspian_sea_fc = ee.FeatureCollection(
             self.inputs["caspian_sea"]["ee_path"]
         )
         self.watermask = ee.Image(self.inputs["watermask"]["ee_path"])
-        self.ee_taskdate = ee.Date(self.taskdate.strftime(self.DATE_FORMAT))
         self.kernels = {
             "coastal_settlements": ee.Kernel.euclidean(
                 radius=self.SETTLEMENT_DISTANCE_FROM_COAST, units="meters"
@@ -79,53 +67,8 @@ class HIIWater(HIITask):
             ),
         }
 
-    def gpw_earliest(self):
-        return self.gpw.sort("system:time_start").first()
-
-    def gpw_latest(self):
-        return self.gpw.sort("system:time_start", False).first()
-
-    def gpw_interpolated(self):
-        gpw_prev = self.gpw.filterDate(
-            self.ee_taskdate.advance(-self.gpw_cadence, "year"), self.ee_taskdate
-        ).first()
-        gpw_next = self.gpw.filterDate(
-            self.ee_taskdate, self.ee_taskdate.advance(self.gpw_cadence, "year")
-        ).first()
-
-        gpw_delta_days = gpw_next.date().difference(gpw_prev.date(), "day")
-        taskdate_delta_days = self.ee_taskdate.difference(gpw_prev.date(), "day")
-
-        gpw_diff = gpw_next.subtract(gpw_prev)
-
-        gpw_daily_change = gpw_diff.divide(gpw_delta_days)
-        gpw_change = gpw_daily_change.multiply(taskdate_delta_days)
-
-        return gpw_prev.add(gpw_change)
-
     def calc(self):
-        gpw_taskdate = None
-        ee_taskdate_millis = self.ee_taskdate.millis()
-        gpw_first_date = ee.Date(
-            self.gpw.sort("system:time_start").first().get("system:time_start")
-        ).millis()
-        gpw_last_date = ee.Date(
-            self.gpw.sort("system:time_start", False).first().get("system:time_start")
-        ).millis()
-        start_test = ee_taskdate_millis.lte(gpw_first_date)
-        end_test = ee_taskdate_millis.gte(gpw_last_date)
-        interpolate_test = start_test.eq(0).And(end_test.eq(0))
-        if interpolate_test.getInfo():
-            gpw_taskdate = self.gpw_interpolated()
-        elif end_test.getInfo():
-            gpw_taskdate = self.gpw_latest()
-        elif start_test.getInfo():
-            gpw_taskdate = self.gpw_earliest()
-        else:
-            raise Exception("no valid GPW image")
-
         caspian_sea = self.caspian_sea_fc.reduceToImage(["glwd_id"], ee.Reducer.max())
-
         ocean = ee.Image.cat(self.ocean.eq(0), caspian_sea.eq(1)).reduce(
             ee.Reducer.max()
         )
@@ -133,7 +76,7 @@ class HIIWater(HIITask):
         # COASTAL
         coastal_settlements = (
             ocean.distance(self.kernels["coastal_settlements"])
-            .updateMask(gpw_taskdate.gte(self.COASTAL_SETTLEMENT_POPULATION_DENSITY))
+            .updateMask(self.population_density.gte(self.COASTAL_SETTLEMENT_POPULATION_DENSITY))
             .selfMask()
         )
 
@@ -211,7 +154,6 @@ class HIIWater(HIITask):
 
     def check_inputs(self):
         super().check_inputs()
-        # add any task-specific checks here, and set self.status = self.FAILED if any fail
 
 
 if __name__ == "__main__":
