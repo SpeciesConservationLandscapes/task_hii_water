@@ -76,7 +76,9 @@ class HIIWater(HIITask):
         # COASTAL
         coastal_settlements = (
             ocean.distance(self.kernels["coastal_settlements"])
-            .updateMask(self.population_density.gte(self.COASTAL_SETTLEMENT_POPULATION_DENSITY))
+            .updateMask(
+                self.population_density.gte(self.COASTAL_SETTLEMENT_POPULATION_DENSITY)
+            )
             .selfMask()
         )
 
@@ -145,6 +147,8 @@ class HIIWater(HIITask):
             .selfMask()
             .updateMask(self.watermask)
             .updateMask(inland_water_mask)
+            .unmask(0)
+            .updateMask(self.watermask)
             .multiply(100)
             .int()
             .rename("hii_water_driver")
