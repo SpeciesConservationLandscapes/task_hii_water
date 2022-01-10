@@ -101,8 +101,6 @@ class HIIWater(HIITask):
         # INLAND
         inland_water = self.gsw.select("occurrence").lte(self.GSW_OCCURRENCE_THRESHOLD)
 
-        inland_water_mask = inland_water.eq(0).selfMask().multiply(0).unmask(1)
-
         inland_water_navigable = inland_water.updateMask(
             inland_water.reduceNeighborhood(
                 reducer=ee.Reducer.max(), kernel=self.kernels["river_width_shrink"],
