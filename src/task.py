@@ -53,9 +53,6 @@ class HIIWater(HIITask):
             "coastal_navigation": ee.Kernel.euclidean(
                 radius=self.COASTAL_NAVIGATION_DISTANCE, units="meters"
             ),
-            "ocean_buffer": ee.Kernel.euclidean(
-                radius=self.OCEAN_BUFFER_DISTANCE, units="meters"
-            ),
             "indirect": ee.Kernel.euclidean(
                 radius=self.INDIRECT_DISTANCE, units="meters"
             ),
