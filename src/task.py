@@ -53,9 +53,6 @@ class HIIWater(HIITask):
             "coastal_navigation": ee.Kernel.euclidean(
                 radius=self.COASTAL_NAVIGATION_DISTANCE, units="meters"
             ),
-            "ocean_buffer": ee.Kernel.euclidean(
-                radius=self.OCEAN_BUFFER_DISTANCE, units="meters"
-            ),
             "indirect": ee.Kernel.euclidean(
                 radius=self.INDIRECT_DISTANCE, units="meters"
             ),
@@ -95,30 +92,15 @@ class HIIWater(HIITask):
             .multiply(self.DECAY_CONSTANT)
             .exp()
             .multiply(self.INDIRECT_INFLUENCE)
-            .updateMask(ocean.eq(0))
+            .updateMask(self.watermask)
         )
 
         # INLAND
-        coast_buffer = (
-            ocean.distance(self.kernels["ocean_buffer"])
-            .gte(0)
-            .unmask(0)
-            .eq(0)
-            .selfMask()
-        )
-
-        inland_water = (
-            self.gsw.select("occurrence")
-            .lte(self.GSW_OCCURRENCE_THRESHOLD)
-            .updateMask(coast_buffer)
-        )
-
-        inland_water_mask = inland_water.eq(0).selfMask().multiply(0).unmask(1)
+        inland_water = self.gsw.select("occurrence").lte(self.GSW_OCCURRENCE_THRESHOLD)
 
         inland_water_navigable = inland_water.updateMask(
             inland_water.reduceNeighborhood(
-                reducer=ee.Reducer.max(),
-                kernel=self.kernels["river_width_shrink"],
+                reducer=ee.Reducer.max(), kernel=self.kernels["river_width_shrink"],
             )
             .eq(0)
             .distance(self.kernels["river_width_expand"], False)
@@ -144,10 +126,6 @@ class HIIWater(HIITask):
         water_driver = (
             coast_influence.unmask(0)
             .max(inland_water_influence.unmask(0))
-            .selfMask()
-            .updateMask(self.watermask)
-            .updateMask(inland_water_mask)
-            .unmask(0)
             .updateMask(self.watermask)
             .multiply(100)
             .int()
