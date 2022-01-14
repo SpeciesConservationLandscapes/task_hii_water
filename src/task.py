@@ -13,7 +13,7 @@ class HIIWater(HIITask):
     GSW_CONNECTED_PIXEL_MIN = 1024  # pixels
     INDIRECT_DISTANCE = 15000  # meters
     DECAY_CONSTANT = -0.0003
-    INDIRECT_INFLUENCE = 10
+    INDIRECT_INFLUENCE = 4
 
     inputs = {
         "gsw": {
@@ -92,7 +92,6 @@ class HIIWater(HIITask):
             .multiply(self.DECAY_CONSTANT)
             .exp()
             .multiply(self.INDIRECT_INFLUENCE)
-            .updateMask(self.watermask)
         )
 
         # INLAND
