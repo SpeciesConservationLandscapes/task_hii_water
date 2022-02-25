@@ -31,11 +31,6 @@ class HIIWater(HIITask):
             "ee_path": "projects/HII/v1/source/phys/ESACCI-LC-L4-WB-Ocean-Map-150m-P13Y-2000-v40",
             "static": True,
         },
-        "watermask": {
-            "ee_type": HIITask.IMAGE,
-            "ee_path": "projects/HII/v1/source/phys/watermask_jrc70_cciocean",
-            "static": True,
-        },
     }
 
     def __init__(self, *args, **kwargs):
@@ -45,7 +40,6 @@ class HIIWater(HIITask):
         self.caspian_sea_fc = ee.FeatureCollection(
             self.inputs["caspian_sea"]["ee_path"]
         )
-        self.watermask = ee.Image(self.inputs["watermask"]["ee_path"])
         self.kernels = {
             "coastal_settlements": ee.Kernel.euclidean(
                 radius=self.SETTLEMENT_DISTANCE_FROM_COAST, units="meters"
